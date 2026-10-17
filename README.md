@@ -18,7 +18,8 @@ A pergunta é: quando uma TAG fica sem dado (NaN) ou um sensor falha com um valo
 │   └── utils.py        # gráfico do índice de anomalia (graph_predict)
 ├── data/               # datasets (não versionados)
 ├── models/             # .pkl dos imputers gerados (não versionados)
-└── requirements.txt
+├── pyproject.toml      # dependências (uv)
+└── uv.lock
 ```
 
 ## Instalação
@@ -26,15 +27,13 @@ A pergunta é: quando uma TAG fica sem dado (NaN) ou um sensor falha com um valo
 Python 3.12. Com [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv venv -p 3.12 && source .venv/bin/activate
-
-# torch CPU
-uv pip install -r requirements.txt --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cpu
-# ou torch CUDA (driver com CUDA >= 13.0)
-uv pip install -r requirements.txt --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu130
+uv sync                 # cria o .venv a partir do pyproject.toml + uv.lock
+source .venv/bin/activate
 
 python -m ipykernel install --user --name missing-values-imputation --display-name "Python (missing-values-imputation)"
 ```
+
+O torch vem do PyPI: no macOS usa MPS e, no Linux, o wheel padrão já inclui CUDA (precisa de um driver NVIDIA compatível). Para fixar outro build (só CPU ou outra versão do CUDA), configure o índice do PyTorch com `[[tool.uv.index]]` + `[tool.uv.sources]` no `pyproject.toml`.
 
 Abra os notebooks **a partir da raiz do repositório**, porque eles importam `from src import ...` e leem `data/`. O MSCVAE usa GPU (CUDA ou MPS) se houver. Os imputers rodam na CPU.
 
