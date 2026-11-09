@@ -1,169 +1,169 @@
-# Imputação de valores faltantes para o MSCVAE
+# Missing-value imputation for MSCVAE
 
-Experimentos de imputação de valores faltantes e de outliers de sensor **antes** da predição de um modelo de detecção de anomalias multivariado (MSCVAE). Os testes usam dados de dois processos industriais reais, **descaracterizados** como *Processo A* e *Processo B*.
+Experiments on imputing missing values and sensor outliers **before** prediction with a multivariate anomaly detection model (MSCVAE). The tests use data from two real industrial processes, **anonymized** as *Process A* and *Process B*.
 
-A pergunta é: quando uma TAG fica sem dado (NaN) ou um sensor falha com um valor absurdo, qual estratégia de imputação reconstrói melhor o sinal sem gerar alarmes falsos e sem esconder uma falha de processo de verdade?
+The question is: when a TAG has no data (NaN) or a sensor fails with an absurd value, which imputation strategy rebuilds the signal best without raising false alarms and without hiding a genuine process fault?
 
-## Estrutura
+## Structure
 
 ```
 .
-├── main_processo_A_MSCVAE.ipynb   # experimento no Processo A
-├── main_processo_B_MSCVAE.ipynb   # experimento no Processo B
+├── main_processo_A_MSCVAE.ipynb   # experiment on Process A
+├── main_processo_B_MSCVAE.ipynb   # experiment on Process B
 ├── src/
-│   ├── ppd.py          # carga do dataset, TAGs do subsistema, remoção de desligado/transitório
-│   ├── MSCVAE.py       # modelo MSCVAE (ConvLSTM + atenção + VAE) e limiar por SPOT/POT
-│   ├── imputation.py   # experimento de imputação: treino, outliers, lacunas, métricas e gráficos
-│   ├── model.py        # train_imputer: treino do IterativeImputer no formato de deploy
-│   └── utils.py        # gráfico do índice de anomalia (graph_predict)
-├── data/               # datasets (não versionados)
-├── models/             # .pkl dos imputers gerados (não versionados)
-├── pyproject.toml      # dependências (uv)
+│   ├── ppd.py          # dataset loading, subsystem TAGs, removal of shutdown/transient periods
+│   ├── MSCVAE.py       # MSCVAE model (ConvLSTM + attention + VAE) and SPOT/POT threshold
+│   ├── imputation.py   # imputation experiment: training, outliers, gaps, metrics and plots
+│   ├── model.py        # train_imputer: trains the IterativeImputer in the deployment format
+│   └── utils.py        # anomaly index plot (graph_predict)
+├── data/               # datasets (not versioned)
+├── models/             # generated imputer .pkl files (not versioned)
+├── pyproject.toml      # dependencies (uv)
 └── uv.lock
 ```
 
-## Instalação
+## Installation
 
-Python 3.12. Com [uv](https://docs.astral.sh/uv/):
+Python 3.12. With [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv sync                 # cria o .venv a partir do pyproject.toml + uv.lock
+uv sync                 # creates the .venv from pyproject.toml + uv.lock
 source .venv/bin/activate
 
 python -m ipykernel install --user --name missing-values-imputation --display-name "Python (missing-values-imputation)"
 ```
 
-O torch vem do PyPI: no macOS usa MPS e, no Linux, o wheel padrão já inclui CUDA (precisa de um driver NVIDIA compatível). Para fixar outro build (só CPU ou outra versão do CUDA), configure o índice do PyTorch com `[[tool.uv.index]]` + `[tool.uv.sources]` no `pyproject.toml`.
+torch comes from PyPI: on macOS it uses MPS and, on Linux, the default wheel already includes CUDA (it needs a compatible NVIDIA driver). To pin another build (CPU only or another CUDA version), configure the PyTorch index with `[[tool.uv.index]]` + `[tool.uv.sources]` in `pyproject.toml`.
 
-Abra os notebooks **a partir da raiz do repositório**, porque eles importam `from src import ...` e leem `data/`. O MSCVAE usa GPU (CUDA ou MPS) se houver. Os imputers rodam na CPU.
+Open the notebooks **from the repository root**, because they import `from src import ...` and read `data/`. MSCVAE uses the GPU (CUDA or MPS) if available. The imputers run on the CPU.
 
-## Dados
+## Data
 
-Os dados não são versionados (`data/` está no `.gitignore`). Cada processo precisa de dois arquivos em `data/`:
+The data is not versioned (`data/` is in `.gitignore`). Each process needs two files in `data/`:
 
-| Arquivo | Conteúdo |
+| File | Content |
 |---|---|
-| `processo_X.parquet` | Uma coluna `Timestamp` (amostragem de 1 min) e uma coluna numérica por TAG (`TAG_001`, `TAG_002`, …). |
-| `processo_X_subsistema.csv` | Separador `;`, colunas `VARIAVEL;DESC;SISTEMA`: o nome da TAG, a descrição e o subsistema. |
+| `processo_X.parquet` | One `Timestamp` column (1-min sampling) and one numeric column per TAG (`TAG_001`, `TAG_002`, …). |
+| `processo_X_subsistema.csv` | `;` separator, columns `VARIAVEL;DESC;SISTEMA`: the TAG name, its description and its subsystem. |
 
-As TAGs, as descrições e os subsistemas foram anonimizados. Os valores e os timestamps são os originais.
+The TAGs, descriptions and subsystems were anonymized. The values and timestamps are the original ones.
 
-## Fluxo do notebook
+## Notebook flow
 
-Os dois notebooks têm a mesma estrutura. Só mudam os parâmetros do processo.
+Both notebooks have the same structure. Only the process parameters change.
 
-1. **Carga dos dados**: `ppd.load_dataset_principal` descarta colunas, converte para numérico e ordena por tempo. `ppd.set_tags_config` cruza o dataset com o subsistema.
-2. **ON/OFF**: `ppd.drop_transitorio_desligado` remove os períodos de equipamento desligado, com uma margem antes e depois (transitório). A referência é uma TAG (`pp_var_ref_desligado`) e um limite.
-3. **Períodos de treino**: um ou mais intervalos de operação normal. Repetir um período em `df_train_list` aumenta o peso dele no treino.
-4. **MSCVAE**: `MSCVAE().fit(df_train_list, gain, epochs)`. O limiar vem do SPOT (Peaks-Over-Threshold) e é multiplicado por `gain`.
-5. **Treino dos imputers**: usa os mesmos períodos do MSCVAE, sem duplicatas. Antes, `fimp.limpar_falhas_treino` tira as linhas com falha grosseira de sensor. `fimp.treinar_imputers` treina um `IterativeImputer` por estimador com o `train_imputer` de deploy, que inclui um holdout temporal com lacunas de 10–240 min, uma TAG por vez.
-6. **Outliers extremos no teste**: `fimp.detectar_outliers` marca as falhas reais de sensor no período de teste, seja valor absurdo, seja fundo de escala. Para conferência, `fimp.listar_desvios` lista os desvios de processo que **não** são tratados.
-7. **Lacunas sintéticas**: `fimp.injetar_lacunas` cria lacunas NaN numa cópia do teste, longe dos outliers reais. Como o valor real é conhecido, dá para medir o erro.
-8. **Imputação**: `fimp.aplicar_imputacao` aplica a regra de produção (abaixo) com cada método.
-9. **Métricas**: erro nas lacunas sintéticas (`fimp.metricas_lacunas`) e efeito no índice de anomalia (`fimp.resumo_efeito_predicao`), com gráficos antes × depois por TAG.
+1. **Data loading**: `ppd.load_dataset_principal` drops columns, converts to numeric and sorts by time. `ppd.set_tags_config` matches the dataset with the subsystem file.
+2. **ON/OFF**: `ppd.drop_transitorio_desligado` removes the periods with the equipment off, with a margin before and after (transient). The reference is one TAG (`pp_var_ref_desligado`) and a threshold.
+3. **Training periods**: one or more normal-operation intervals. Repeating a period in `df_train_list` increases its weight in training.
+4. **MSCVAE**: `MSCVAE().fit(df_train_list, gain, epochs)`. The threshold comes from SPOT (Peaks-Over-Threshold) and is multiplied by `gain`.
+5. **Imputer training**: uses the same periods as MSCVAE, without duplicates. First, `fimp.limpar_falhas_treino` removes rows with gross sensor failures. `fimp.treinar_imputers` trains one `IterativeImputer` per estimator with the deployment `train_imputer`, which includes a temporal holdout with 10–240 min gaps, one TAG at a time.
+6. **Extreme outliers in the test set**: `fimp.detectar_outliers` flags the real sensor failures in the test period, whether an absurd value or a full-scale reading. For cross-checking, `fimp.listar_desvios` lists the process deviations that are **not** treated.
+7. **Synthetic gaps**: `fimp.injetar_lacunas` creates NaN gaps in a copy of the test set, away from the real outliers. Since the true value is known, the error can be measured.
+8. **Imputation**: `fimp.aplicar_imputacao` applies the production rule (below) with each method.
+9. **Metrics**: error on the synthetic gaps (`fimp.metricas_lacunas`) and effect on the anomaly index (`fimp.resumo_efeito_predicao`), with before/after plots per TAG.
 
-## Métodos comparados
+## Compared methods
 
-| Método | Descrição |
+| Method | Description |
 |---|---|
-| `ffill (baseline)` | `ffill`/`bfill` em todas as lacunas. |
-| `BayesianRidge` | `IterativeImputer` linear. |
-| `HistGB (produção)` | `IterativeImputer` com `HistGradientBoostingRegressor` (estimador padrão do deploy). |
-| `ExtraTrees` | `IterativeImputer` com `ExtraTreesRegressor` raso, para manter o `.pkl` pequeno. |
-| `XGBoost` | `IterativeImputer` com `XGBRegressor`. |
-| `LightGBM` | `IterativeImputer` com `LGBMRegressor`. |
+| `ffill (baseline)` | `ffill`/`bfill` on every gap. |
+| `BayesianRidge` | Linear `IterativeImputer`. |
+| `HistGB (produção)` | `IterativeImputer` with `HistGradientBoostingRegressor` (the deployment's default estimator). |
+| `ExtraTrees` | `IterativeImputer` with a shallow `ExtraTreesRegressor`, to keep the `.pkl` small. |
+| `XGBoost` | `IterativeImputer` with `XGBRegressor`. |
+| `LightGBM` | `IterativeImputer` with `LGBMRegressor`. |
 
-Os cenários de predição também incluem a **Referência** (dados originais, sem lacunas sintéticas) e **Sem imputação (dropna)**, que descarta as linhas com NaN.
+The prediction scenarios also include the **Reference** (original data, without synthetic gaps) and **No imputation (dropna)**, which drops the rows with NaN.
 
-Para testar outro estimador, edite o dict `estimadores` no notebook.
+To test another estimator, edit the `estimadores` dict in the notebook.
 
-## Regras principais
+## Main rules
 
-**Outlier extremo (falha de sensor).** Só é imputado o que é falha de sensor. Os desvios de processo, mesmo grandes, são justamente o que o MSCVAE precisa detectar e vão crus para ele. Há duas regras.
+**Extreme outlier (sensor failure).** Only sensor failures are imputed. Process deviations, even large ones, are exactly what MSCVAE needs to detect and are passed to it raw. There are two rules.
 
-*Valor absurdo.* O valor é marcado quando cumpre **as duas** condições:
+*Absurd value.* A value is flagged when it meets **both** conditions:
 
-1. `|x − mediana| > FATOR_EXTREMO × max(faixa p1–p99, |mediana|)` do treino. É um valor absurdo para o nível da TAG.
-2. `|x[t] − x[t−1]| > SALTO_EXTREMO × p99,9` dos saltos do treino. O valor foi alcançado num salto que o sensor nunca deu.
+1. `|x − median| > FATOR_EXTREMO × max(p1–p99 range, |median|)` of the training set. The value is absurd for the TAG's level.
+2. `|x[t] − x[t−1]| > SALTO_EXTREMO × p99.9` of the training jumps. The value was reached in a jump the sensor never made.
 
-Depois do disparo, a marcação segue para frente até o valor voltar à faixa normal (± `K_RETORNO` faixas). Um desvio de processo evolui aos poucos e não cumpre a condição 2. Essa regra pega o sensor que vai para ~6e6 ou para 10× a faixa.
+After it fires, the flag carries forward until the value returns to the normal range (± `K_RETORNO` ranges). A process deviation evolves gradually and does not meet condition 2. This rule catches the sensor that jumps to ~6e6 or to 10× its range.
 
-*Fundo de escala.* Vale só para as TAGs configuradas em `LIMITES_ESCALA = {tag: (limite_inferior, limite_superior)}`, com `None` no lado sem limite. Cobre a falha que fica perto da faixa operacional, onde a regra anterior não chega: um sensor a ~1000 que vai para −58 tem fator ~1. O valor é marcado quando cumpre **as duas** condições:
+*Full scale.* Applies only to the TAGs configured in `LIMITES_ESCALA = {tag: (lower_limit, upper_limit)}`, with `None` on the side without a limit. It covers the failure that stays close to the operating range, where the previous rule does not reach: a sensor at ~1000 that drops to −58 has a factor of ~1. The value is flagged when it meets **both** conditions:
 
-1. Está na zona do limite: a menos de `TOL_ESCALA` da distância entre a faixa normal (p1/p99) e o limite.
-2. Chegou lá de forma abrupta: em até 2 amostras, um salto > `SALTO_ESCALA` × p99,9 dos saltos do treino. O processo que sobe aos poucos até saturar o instrumento é desvio real e fica cru.
+1. It is in the limit zone: within `TOL_ESCALA` of the distance between the normal range (p1/p99) and the limit.
+2. It got there abruptly: within 2 samples, a jump > `SALTO_ESCALA` × p99.9 of the training jumps. A process that rises gradually until it saturates the instrument is a real deviation and stays raw.
 
-Depois do disparo, a marcação segue enquanto o valor estiver mais perto do limite do que da faixa normal. Isso inclui a rampa interpolada que o histórico grava depois da falha, mas não a parada de equipamento logo depois de um pico no limite.
+After it fires, the flag continues while the value is closer to the limit than to the normal range. This includes the interpolated ramp the historian records after the failure, but not an equipment stop right after a spike at the limit.
 
-O ideal é preencher `LIMITES_ESCALA` com o range real dos instrumentos. `fimp.candidatos_fundo_escala` lista os valores em que cada sensor parou depois de saídas abruptas repetidas, como ponto de partida, mas também traz falsos candidatos (TAGs inteiras, paradas).
+Ideally, `LIMITES_ESCALA` is filled with the instruments' real ranges. `fimp.candidatos_fundo_escala` lists the values at which each sensor stopped after repeated abrupt exits, as a starting point, but it also returns false candidates (integer TAGs, stops).
 
-Nas duas regras, o que vem antes do disparo nunca é marcado, como no runtime, que só vê o passado. Por isso a primeira amostra da transição (a média do minuto em que o sensor travou) fica crua.
+In both rules, what comes before the trigger is never flagged, just like in the runtime, which only sees the past. That is why the first sample of the transition (the average of the minute when the sensor froze) stays raw.
 
-**Regra de aplicação (igual à produção):**
+**Application rule (same as production):**
 
-1. outlier vira NaN;
-2. lacuna menor que `START_MINUTES` com valor anterior válido é preenchida com `ffill`;
-3. o restante vai para o `IterativeImputer`;
-4. linha com ≥ `MAX_BAD_RATIO` das variáveis inválidas não é reconstruída.
+1. an outlier becomes NaN;
+2. a gap shorter than `START_MINUTES` with a valid previous value is filled with `ffill`;
+3. the rest goes to the `IterativeImputer`;
+4. a row with ≥ `MAX_BAD_RATIO` of its variables invalid is not reconstructed.
 
-## Parâmetros
+## Parameters
 
-| Parâmetro | Padrão | Descrição |
+| Parameter | Default | Description |
 |---|---|---|
-| `FATOR_FALHA_GROSSEIRA` | 50 | Limpeza do treino do imputer: \|x − mediana\| > fator × escala robusta. |
-| `FATOR_EXTREMO` | 3.0 | Condição 1 do outlier extremo. |
-| `SALTO_EXTREMO` | 20.0 | Condição 2 do outlier extremo. |
-| `K_RETORNO` | 1.0 | Faixa de retorno que encerra a marcação do valor absurdo. |
-| `LIMITES_ESCALA` | por processo | Limites do instrumento por TAG para a regra de fundo de escala. |
-| `TOL_ESCALA` | 0.05 | Zona do limite: fração da distância entre a faixa normal e o limite. |
-| `SALTO_ESCALA` | 3.0 | Salto mínimo (× p99,9), em até 2 amostras, para disparar o fundo de escala. |
-| `START_MINUTES` | 10 | Lacunas mais curtas que isso (com âncora) vão para `ffill`. |
-| `MAX_BAD_RATIO` | 0.7 | Fração de variáveis inválidas a partir da qual a linha não é reconstruída. |
-| `LACUNAS_POR_TAG` | 3 | Lacunas sintéticas por TAG. |
-| `DUR_MIN`, `DUR_MAX` | 10, 240 | Duração das lacunas sintéticas (min). |
-| `FRAC_SIMULTANEAS` | 0.3 | Fração das lacunas que derruba 2–3 TAGs juntas. |
-| `PASSO_AMOSTRAGEM` | 1 | Subamostragem do treino dos imputers (> 1 acelera). |
+| `FATOR_FALHA_GROSSEIRA` | 50 | Cleaning of the imputer's training data: \|x − median\| > factor × robust scale. |
+| `FATOR_EXTREMO` | 3.0 | Condition 1 of the extreme outlier. |
+| `SALTO_EXTREMO` | 20.0 | Condition 2 of the extreme outlier. |
+| `K_RETORNO` | 1.0 | Return band that ends the absurd-value flag. |
+| `LIMITES_ESCALA` | per process | Instrument limits per TAG for the full-scale rule. |
+| `TOL_ESCALA` | 0.05 | Limit zone: fraction of the distance between the normal range and the limit. |
+| `SALTO_ESCALA` | 3.0 | Minimum jump (× p99.9), within 2 samples, to trigger the full-scale rule. |
+| `START_MINUTES` | 10 | Gaps shorter than this (with an anchor) go to `ffill`. |
+| `MAX_BAD_RATIO` | 0.7 | Fraction of invalid variables above which the row is not reconstructed. |
+| `LACUNAS_POR_TAG` | 3 | Synthetic gaps per TAG. |
+| `DUR_MIN`, `DUR_MAX` | 10, 240 | Duration of the synthetic gaps (min). |
+| `FRAC_SIMULTANEAS` | 0.3 | Fraction of the gaps that take down 2–3 TAGs at once. |
+| `PASSO_AMOSTRAGEM` | 1 | Subsampling of the imputers' training data (> 1 speeds it up). |
 
-## Principais resultados
+## Main results
 
-Os números abaixo são da execução anterior à regra de fundo de escala. Com ela, o Processo A passa a imputar 83 pontos de falha de sensor no teste (antes, nenhum), e o Processo B não muda. O MAE e o RMSE são normalizados pelo desvio-padrão da TAG no treino, para comparar TAGs de escalas diferentes. Os valores são medianas entre as TAGs.
+The numbers below come from the run before the full-scale rule. With it, Process A now imputes 83 sensor-failure points in the test set (none before), and Process B does not change. MAE and RMSE are normalized by the TAG's training standard deviation, to compare TAGs on different scales. The values are medians across TAGs.
 
-### Lacunas sintéticas no teste
+### Synthetic gaps in the test set
 
-| Método | Proc. A: MAE norm. | Proc. A: R² | Proc. B: MAE norm. | Proc. B: R² |
+| Method | Proc. A: norm. MAE | Proc. A: R² | Proc. B: norm. MAE | Proc. B: R² |
 |---|---|---|---|---|
-| XGBoost | **0,184** | **0,763** | 0,244 | 0,823 |
-| LightGBM | 0,190 | 0,728 | **0,221** | 0,814 |
-| HistGB (produção) | 0,197 | 0,693 | 0,253 | **0,835** |
-| ExtraTrees | 0,267 | 0,606 | 0,260 | 0,798 |
-| BayesianRidge | 0,298 | 0,520 | 0,240 | 0,824 |
-| ffill (baseline) | 0,584 | −0,126 | 0,284 | 0,683 |
+| XGBoost | **0.184** | **0.763** | 0.244 | 0.823 |
+| LightGBM | 0.190 | 0.728 | **0.221** | 0.814 |
+| HistGB (production) | 0.197 | 0.693 | 0.253 | **0.835** |
+| ExtraTrees | 0.267 | 0.606 | 0.260 | 0.798 |
+| BayesianRidge | 0.298 | 0.520 | 0.240 | 0.824 |
+| ffill (baseline) | 0.584 | −0.126 | 0.284 | 0.683 |
 
-### Efeito na predição do MSCVAE
+### Effect on the MSCVAE prediction
 
-| Cenário | Proc. A: cobertura nas lacunas | Proc. A: \|Δ phi/limiar\| | Proc. B: cobertura nas lacunas | Proc. B: % alarmes nos outliers reais |
+| Scenario | Proc. A: coverage in the gaps | Proc. A: \|Δ phi/threshold\| | Proc. B: coverage in the gaps | Proc. B: % alarms on real outliers |
 |---|---|---|---|---|
-| Referência | 100% | — | 100% | 36,0% |
-| Sem imputação (dropna) | 5,7% | 4,95 | 6,3% | 36,1% |
-| ffill (baseline) | 100% | 0,18 | 100% | 8,0% |
-| IterativeImputer (5 métodos) | 100% | 0,08–0,09 | 100% | 7,9–8,0% |
+| Reference | 100% | — | 100% | 36.0% |
+| No imputation (dropna) | 5.7% | 4.95 | 6.3% | 36.1% |
+| ffill (baseline) | 100% | 0.18 | 100% | 8.0% |
+| IterativeImputer (5 methods) | 100% | 0.08–0.09 | 100% | 7.9–8.0% |
 
-### Conclusões
+### Conclusions
 
-- **Sem imputação, o monitoramento se perde.** O `dropna` mantém só ~6% dos instantes dentro das lacunas.
-- **O IterativeImputer ganha do ffill.** No Processo A, o MAE normalizado cai de 0,58 para 0,18–0,20 com os métodos de árvore, e o desvio do índice de anomalia em relação à referência cai pela metade (0,18 → ~0,08). No Processo B a diferença é menor (MAE de 0,28 para 0,22–0,26).
-- **Imputar o outlier de sensor elimina alarmes falsos.** No Processo B, os alarmes nos trechos com falha de sensor caem de 36% para ~8% com qualquer método.
-- **Entre os métodos de árvore, a diferença é pequena.** O `HistGB (produção)` fica perto dos melhores e tem o `.pkl` menor entre as árvores (1,7–3,7 MB, contra 6–8 MB de XGBoost/LightGBM). Isso importa no deploy, porque o runtime baixa o imputer a cada ciclo.
-- **O holdout do treino mostra TAGs pouco previsíveis** (cerca de 20 por processo com R² < 0,5). Para essas TAGs, a imputação deve ser usada com cautela.
+- **Without imputation, monitoring is lost.** `dropna` keeps only ~6% of the instants inside the gaps.
+- **IterativeImputer beats ffill.** On Process A, the normalized MAE drops from 0.58 to 0.18–0.20 with the tree methods, and the deviation of the anomaly index from the reference is halved (0.18 → ~0.08). On Process B the difference is smaller (MAE from 0.28 to 0.22–0.26).
+- **Imputing the sensor outlier removes false alarms.** On Process B, alarms on stretches with sensor failures drop from 36% to ~8% with any method.
+- **Among the tree methods, the difference is small.** `HistGB (production)` is close to the best and has the smallest `.pkl` among the trees (1.7–3.7 MB, versus 6–8 MB for XGBoost/LightGBM). This matters in deployment, because the runtime downloads the imputer every cycle.
+- **The training holdout shows poorly predictable TAGs** (about 20 per process with R² < 0.5). For those TAGs, imputation should be used with caution.
 
-## Adicionar um novo processo
+## Adding a new process
 
-1. Coloque `processo_X.parquet` e `processo_X_subsistema.csv` em `data/`.
-2. Copie um dos notebooks e ajuste:
+1. Put `processo_X.parquet` and `processo_X_subsistema.csv` in `data/`.
+2. Copy one of the notebooks and adjust:
    - `process_name`;
-   - as colunas descartadas na carga;
-   - os parâmetros de ON/OFF (`pp_var_ref_desligado`, limite e cortes);
-   - os limites de escala dos instrumentos (`LIMITES_ESCALA`);
-   - os períodos de treino;
-   - o `gain` do MSCVAE.
-3. Rode o notebook inteiro. Os imputers são salvos em `models/`.
+   - the columns dropped on load;
+   - the ON/OFF parameters (`pp_var_ref_desligado`, threshold and cuts);
+   - the instruments' scale limits (`LIMITES_ESCALA`);
+   - the training periods;
+   - the MSCVAE `gain`.
+3. Run the whole notebook. The imputers are saved in `models/`.
